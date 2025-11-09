@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdio>
 #include <condition_variable>
+#include <atomic>
 enum class LogLevel
 {
     LOG_INFO = 0,
@@ -18,11 +19,10 @@ enum class LogLevel
     LOG_ERROR,
     LOG_FATAL
 };
-
 struct LogEntry
 {
     uint64_t m_timestamp_ns;
-    std::chrono::system_clock::time_point m_wall_time; //用于可读时间,实现时间单调性
+    std::chrono::system_clock::time_point m_wall_time; // 用于可读时间,实现时间单调性
     std::thread::id m_id;
     LogLevel m_level;
     const char *m_filename;
@@ -42,20 +42,31 @@ class DefaultFormatter : public Formatter
 public:
     std::string format(const LogEntry &entry) const override;
 };
+
+using EntryPtr = std::unique_ptr<LogEntry>;
+
 // 双缓冲队列
 class AsyncQueue
 {
 public:
-    void push(std::unique_ptr<LogEntry> entry);
-    bool popBatch(std::vector<std::unique_ptr<LogEntry>> &buffer);
-    void stop();
+
+
+    // 返回 true 表示成功入队；在已关闭状态下返回 false（调用方应自行回收 entry）
+    bool push(EntryPtr e);
+    // 关闭队列:唤醒消费者,尽力清空阶段
+    void close();
+    // 等待直到有一批可读，或队列关闭且彻底清空
+    // out 获取本次批次，返回值：true=仍可能还有数据（应继续循环），false=已经完全清空（可退出）
+    bool waitSwapBatch(std::vector<EntryPtr> &out);
 
 private:
     std::mutex m_mtx;
     std::condition_variable m_cv; // ✅ 新增：通知机制
-    bool m_stop = false;          // ✅ 新增：停止标志
-    std::vector<std::unique_ptr<LogEntry>> m_buffers[2];
-    size_t m_cur_write_idx = 0;
+    std::vector<EntryPtr> m_bufA, m_bufB;
+    std::vector<EntryPtr> *m_write_buf{&m_bufA};
+    std::vector<EntryPtr> *m_read_buf{&m_bufB};
+    bool m_closed = false;                     // ✅ 新增：停止标志
+    static const size_t kBatchThreshold = 256; // 触发切批/唤醒的阈值（可调）
 };
 
 class Logger
@@ -68,14 +79,15 @@ public:
     }
     void log(LogLevel level, const char *filename, int line, const char *fmt, ...);
     void setFormatter(std::unique_ptr<Formatter> formatter);
+    void stop();
 
 private:
     std::ofstream m_file;
     AsyncQueue m_queue;
     std::shared_ptr<Formatter> m_formatter;
     mutable std::mutex m_formatter_mtx;
-    void BackendLoop();
     std::thread backend_thread;
+    std::atomic<bool> m_stopped{false}; // 幂等标记
     Logger();
     ~Logger();
     // 禁止拷贝和移动（C++11 = delete）
@@ -86,6 +98,7 @@ private:
     void Write2File(const LogEntry &entry);
     // 获取当前时间（纳秒）
     uint64_t getCurrentTimeNs();
+    void BackendLoop();
 };
 
 #define LOG_INFO(fmt, ...) \

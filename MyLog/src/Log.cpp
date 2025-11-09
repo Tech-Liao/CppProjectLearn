@@ -12,7 +12,7 @@ namespace
 
 #if defined(_WIN32)
         tm t{};
-        localtime_t(&t, &sec);
+        localtime_s(&t, &sec);
 #else
         tm t{};
         localtime_r(&sec, &t);
@@ -44,7 +44,8 @@ namespace
     }
 } // namespace
 
-Logger::Logger()
+// ======= Logger ===========
+Logger::Logger() : m_stopped(false)
 {
     m_file.open("app.log", std::ios::app); // 追加模式
     m_formatter = std::make_shared<DefaultFormatter>();
@@ -52,32 +53,26 @@ Logger::Logger()
 }
 Logger::~Logger()
 {
-    m_queue.stop(); // 通知后端线程退出
-
-    if (backend_thread.joinable())
-        backend_thread.join(); // 等待后端线程完全退出
-
-    m_file.flush();
-    m_file.close();
+    stop();
+    if (m_file.is_open())
+        m_file.close();
 }
 void Logger::BackendLoop()
 {
-    std::vector<std::unique_ptr<LogEntry>> buffer;
-    while (true)
+    std::vector<EntryPtr> batch;
+    while (m_queue.waitSwapBatch(batch))
     {
-        bool keep_running = m_queue.popBatch(buffer);
-
-        // 处理数据（锁外执行，避免阻塞生产者）
-        for (auto &entry : buffer)
+        if (!batch.empty())
         {
-            Write2File(*entry);
+            for(size_t i=0;i<batch.size();++i)
+            {
+                Write2File(*batch[i]);
+            }
+            batch.clear();
+            m_file.flush();
         }
-        buffer.clear();
-        m_file.flush();
-
-        if (!keep_running)
-            break;
     }
+    m_file.flush();
 }
 
 void Logger::log(LogLevel level, const char *filename, int line, const char *fmt, ...)
@@ -129,41 +124,67 @@ uint64_t Logger::getCurrentTimeNs()
     return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-void AsyncQueue::push(std::unique_ptr<LogEntry> entry)
-{ // TODO: 加锁，把 entry 塞进 buffers_[cur_write_idx_]
-
-    std::lock_guard<std::mutex> lock(m_mtx);
-    if (m_stop)
-        return;
-    m_buffers[m_cur_write_idx].emplace_back(std::move(entry));
-    m_cv.notify_one();
+void Logger::stop()
+{
+    bool expected = false;
+    if (!m_stopped.compare_exchange_strong(expected, true))
+    {
+        return; // 已停止：幂等返回
+    }
+    m_queue.close(); // 进入关闭+清空阶段
+    if (backend_thread.joinable())
+        backend_thread.join(); // 等后台线程清空并退出
 }
 
-bool AsyncQueue::popBatch(std::vector<std::unique_ptr<LogEntry>> &buffer)
+// ======= AsyncQueue===========
+
+
+// 返回 true 表示成功入队；在已关闭状态下返回 false（调用方应自行回收 entry）
+bool AsyncQueue::push(EntryPtr e)
 {
     std::unique_lock<std::mutex> lock(m_mtx);
-
-    m_cv.wait(lock, [this]
-              { return m_stop || !m_buffers[m_cur_write_idx].empty(); });
-
-    size_t read_idx = m_cur_write_idx;
-    m_cur_write_idx = 1 - m_cur_write_idx;
-
-    buffer.swap(m_buffers[read_idx]);
-
-    if (!buffer.empty())
-        return true;
-
-    // 如果 stop 且两个缓冲区都为空，允许后端线程退出
-    return !(m_stop && m_buffers[m_cur_write_idx].empty());
+    if (m_closed)
+        return false;
+    const bool was_empty = m_write_buf->empty();       // 关键：入队前记录
+    m_write_buf->push_back(std::move(e));
+    // 触发条件：从空到非空，或恰好达到阈值
+    if (was_empty || m_write_buf->size() == kBatchThreshold)
+    {
+        m_cv.notify_one();
+    }
+    return true;
 }
-
-// ✅ 新增：停止方法
-void AsyncQueue::stop()
+// 关闭队列:唤醒消费者,尽力清空阶段
+void AsyncQueue::close()
 {
-    std::lock_guard<std::mutex> lock(m_mtx);
-    m_stop = true;
-    m_cv.notify_all(); // 唤醒所有等待线程
+    std::unique_lock<std::mutex> lock(m_mtx);
+    if (m_closed)
+        return;
+    m_closed = true;
+    m_cv.notify_all();
+}
+// 等待直到有一批可读，或队列关闭且彻底清空
+// out 获取本次批次，返回值：true=仍可能还有数据（应继续循环），false=已经完全清空（可退出）
+bool AsyncQueue::waitSwapBatch(std::vector<EntryPtr> &out)
+{
+    out.clear();
+    std::unique_lock<std::mutex> lock(m_mtx);
+    m_cv.wait(lock, [&]
+              { return m_closed || !m_write_buf->empty(); });
+    // 若关闭且写缓冲为空，检查读缓冲是否还有遗留
+    if (m_write_buf->empty() && m_closed)
+    {
+        if (!m_read_buf->empty())
+        {
+            out.swap(*m_read_buf);
+            return true; // 仍有数据需要处理
+        }
+        return false; // 两缓冲均空，彻底清空
+    }
+    // 正常切换一批：把写缓冲切换为读缓冲并导出
+    std::swap(m_write_buf, m_read_buf);
+    out.swap(*m_read_buf);
+    return true;
 }
 
 std::string DefaultFormatter::format(const LogEntry &entry) const
