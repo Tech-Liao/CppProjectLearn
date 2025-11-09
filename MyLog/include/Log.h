@@ -9,7 +9,6 @@
 #include <ctime>
 #include <cstring>
 #include <cstdio>
-#include <atomic>
 #include <condition_variable>
 enum class LogLevel
 {
@@ -34,9 +33,8 @@ class AsyncQueue
 {
 public:
     void push(std::unique_ptr<LogEntry> entry);
-    std::vector<std::unique_ptr<LogEntry>> swapBuffer();
+    bool popBatch(std::vector<std::unique_ptr<LogEntry>> &buffer);
     void stop();
-    bool shouldExit();
 
 private:
     std::mutex m_mtx;
@@ -61,7 +59,6 @@ private:
     AsyncQueue m_queue;
     void BackendLoop();
     std::thread backend_thread;
-    std::atomic<bool> m_stop_flag;
     Logger();
     ~Logger();
     // 禁止拷贝和移动（C++11 = delete）

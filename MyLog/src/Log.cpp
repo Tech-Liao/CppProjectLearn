@@ -1,44 +1,36 @@
 #include "Log.h"
 
-Logger::Logger() : m_stop_flag(false)
+Logger::Logger()
 {
     m_file.open("app.log", std::ios::app); // 追加模式
     backend_thread = std::thread(&Logger::BackendLoop, this);
 }
 Logger::~Logger()
 {
-    m_queue.stop(); // 1. 先通知队列停止
+    m_queue.stop(); // 通知后端线程退出
 
     if (backend_thread.joinable())
-        backend_thread.join(); // 2. 等待后端线程完全退出
-
-    // 3. 此时无竞争，安全清理剩余数据
-    auto buffer = m_queue.swapBuffer();
-    for (auto &entry : buffer)
-        Write2File(*entry);
-
-    buffer = m_queue.swapBuffer(); // 清理另一个缓冲区
-    for (auto &entry : buffer)
-        Write2File(*entry);
+        backend_thread.join(); // 等待后端线程完全退出
 
     m_file.flush();
     m_file.close();
 }
 void Logger::BackendLoop()
 {
+    std::vector<std::unique_ptr<LogEntry>> buffer;
     while (true)
     {
-        auto buffer = m_queue.swapBuffer();
+        bool keep_running = m_queue.popBatch(buffer);
 
-        // 处理数据
+        // 处理数据（锁外执行，避免阻塞生产者）
         for (auto &entry : buffer)
         {
             Write2File(*entry);
         }
+        buffer.clear();
         m_file.flush();
 
-        // 检查停止标志
-        if(m_queue.shouldExit())
+        if (!keep_running)
             break;
     }
 }
@@ -132,19 +124,23 @@ void AsyncQueue::push(std::unique_ptr<LogEntry> entry)
     m_cv.notify_one();
 }
 
-std::vector<std::unique_ptr<LogEntry>> AsyncQueue::swapBuffer()
-{ // TODO: 加锁，翻转 cur_write_idx_，返回另一个 buffer 的内容
+bool AsyncQueue::popBatch(std::vector<std::unique_ptr<LogEntry>> &buffer)
+{
     std::unique_lock<std::mutex> lock(m_mtx);
 
-    // 等待条件：另一个缓冲区有数据，或者收到停止信号
-    m_cv.wait_for(lock, std::chrono::milliseconds(10), [this]
-                  {
-        size_t read_idx = 1 - m_cur_write_idx;
-        return !m_buffers[read_idx].empty() || m_stop; });
+    m_cv.wait(lock, [this]
+              { return m_stop || !m_buffers[m_cur_write_idx].empty(); });
 
-    size_t read_idx = 1 - m_cur_write_idx;
+    size_t read_idx = m_cur_write_idx;
     m_cur_write_idx = 1 - m_cur_write_idx;
-    return std::move(m_buffers[read_idx]);
+
+    buffer.swap(m_buffers[read_idx]);
+
+    if (!buffer.empty())
+        return true;
+
+    // 如果 stop 且两个缓冲区都为空，允许后端线程退出
+    return !(m_stop && m_buffers[m_cur_write_idx].empty());
 }
 
 // ✅ 新增：停止方法
@@ -153,11 +149,4 @@ void AsyncQueue::stop()
     std::lock_guard<std::mutex> lock(m_mtx);
     m_stop = true;
     m_cv.notify_all(); // 唤醒所有等待线程
-}
-
-// ✅ 新增：原子化检查退出条件（解决直接访问私有成员的问题）
-bool AsyncQueue::shouldExit() {
-    std::lock_guard<std::mutex> lock(m_mtx);
-    size_t read_idx = 1 - m_cur_write_idx;
-    return m_stop && m_buffers[read_idx].empty();
 }
