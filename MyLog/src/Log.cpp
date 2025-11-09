@@ -104,6 +104,17 @@ void Logger::BackendLoop()
     std::vector<EntryPtr> batch;
     while (m_queue.waitSwapBatch(batch))
     {
+        // === 新增：处理 reopen 标志（只 close→open，不 rename） ===
+        if (m_need_reopen.exchange(false))
+        {
+            LogRotateOptions snap;
+            { // 读 m_rot_opt 做快照，避免与 setRotateOptions 并发
+                std::lock_guard<std::mutex> lk(m_rot_mtx);
+                snap = m_rot_opt;
+            }
+            doReopen_(snap);
+        }
+
         if (!batch.empty())
         {
 
@@ -177,9 +188,27 @@ void Logger::rotateNow_(const LogRotateOptions &opt)
                                          opt.base + "_" + m_cur_data + "_" + std::to_string(m_seq++) + "." + opt.ext);
     const std::string live = joinPath(opt.dir, opt.base + "." + opt.ext);
     // 重命名为历史文件
-    (void)std::rename(live.c_str(),rotated.c_str());
+    (void)std::rename(live.c_str(), rotated.c_str());
     m_file.open(live.c_str(), std::ios::binary | std::ios::app);
     m_writted_bytes = fileSizeIfExists(live);
+}
+
+void Logger::doReopen_(const LogRotateOptions &opt)
+{
+    // 与 rotateNow_ 的前半段相同，但不生成历史名、不 rename
+    m_file.flush();
+    m_file.close();
+
+    const std::string live = joinPath(opt.dir, opt.base + "." + opt.ext);
+
+    // 重新打开活跃文件（配合外部 logrotate 的 move+create）
+    m_file.open(live.c_str(), std::ios::out | std::ios::app);
+
+    // 重新读取当前大小（外部可能新建了空文件）
+    m_writted_bytes = fileSizeIfExists(live);
+
+    // 可选：打开失败时降级到 stderr，或把 need_reopen 置回以便下次重试
+    // if (!m_file) { std::perror("reopen"); }
 }
 
 // Logger Public
@@ -239,6 +268,11 @@ void Logger::setRotateOptions(const LogRotateOptions &opt)
 {
     std::lock_guard<std::mutex> lock(m_rot_mtx);
     m_rot_opt = opt; // 简单拷贝；若在运行中调用，生效点是下个批次写入前
+}
+
+void Logger::reopen()
+{
+    m_need_reopen.store(true, std::memory_order_relaxed);
 }
 
 // ======= AsyncQueue===========

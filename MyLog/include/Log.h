@@ -139,6 +139,7 @@ private:
     // ——按大小轮转：批量写入前的检查与实际轮转——
     void maybeRotateBeforeWrite_(size_t estimated_batch_bytes);
     void rotateNow_(const LogRotateOptions &opt);
+    void doReopen_(const LogRotateOptions& opt); // 新增：后台真正执行的重开
 };
 
 #if LOG_COMPILED_LEVEL <= LOG_LVL_DEBUG
