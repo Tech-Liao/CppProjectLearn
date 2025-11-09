@@ -11,14 +11,24 @@
 #include <cstdio>
 #include <condition_variable>
 #include <atomic>
-enum class LogLevel
+enum class LogLevel : int
 {
-    LOG_INFO = 0,
-    LOG_DEBUG,
-    LOG_WARN,
-    LOG_ERROR,
-    LOG_FATAL
+    DEBUG = 0,
+    INFO = 1,
+    WARN = 2,
+    ERROR = 3,
+    FATAL = 4,
+    OFF = 5
 };
+#ifndef LOG_COMPILED_LEVEL
+#define LOG_LVL_DEBUG 0
+#define LOG_LVL_INFO 1
+#define LOG_LVL_WARN 2
+#define LOG_LVL_ERROR 3
+#define LOG_LVL_FATAL 4
+#define LOG_LVL_OFF 5
+#endif
+
 struct LogEntry
 {
     uint64_t m_timestamp_ns;
@@ -49,8 +59,6 @@ using EntryPtr = std::unique_ptr<LogEntry>;
 class AsyncQueue
 {
 public:
-
-
     // 返回 true 表示成功入队；在已关闭状态下返回 false（调用方应自行回收 entry）
     bool push(EntryPtr e);
     // 关闭队列:唤醒消费者,尽力清空阶段
@@ -78,6 +86,8 @@ public:
         return inst;
     }
     void log(LogLevel level, const char *filename, int line, const char *fmt, ...);
+    void setLevel(LogLevel lvl);
+    LogLevel level() const;
     void setFormatter(std::unique_ptr<Formatter> formatter);
     void stop();
 
@@ -88,9 +98,10 @@ private:
     mutable std::mutex m_formatter_mtx;
     std::thread backend_thread;
     std::atomic<bool> m_stopped{false}; // 幂等标记
+    std::atomic<int> m_runtime_level;   // 运行时阈值（与 LogLevel 的整数值对齐）
     Logger();
     ~Logger();
-    // 禁止拷贝和移动（C++11 = delete）
+    // 禁止拷贝和移动（Cpp11 = delete）
     Logger(const Logger &) = delete;
     Logger &operator=(const Logger &) = delete;
     Logger(Logger &&) = delete;
@@ -101,8 +112,42 @@ private:
     void BackendLoop();
 };
 
-#define LOG_INFO(fmt, ...) \
-    Logger::instance().log(LogLevel::LOG_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 
-#define LOG_ERROR(fmt, ...) \
-    Logger::instance().log(LogLevel::LOG_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#if LOG_COMPILED_LEVEL <= LOG_LVL_DEBUG
+#define LOG_DEBUG(logger, fmt, ...) (logger).log(LogLevel::DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#else
+#define LOG_DEBUG(logger, fmt, ...) \
+    do                              \
+    {                               \
+    } while (0)
+#endif
+
+#if LOG_COMPILED_LEVEL <= LOG_LVL_INFO
+#define LOG_INFO(logger, fmt, ...) (logger).log(LogLevel::INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#else
+#define LOG_INFO(logger, fmt, ...) \
+    do                             \
+    {                              \
+    } while (0)
+#endif
+
+#if LOG_COMPILED_LEVEL <= LOG_LVL_WARN
+#define LOG_WARN(logger, fmt, ...) (logger).log(LogLevel::WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#else
+#define LOG_WARN(logger, fmt, ...) \
+    do                             \
+    {                              \
+    } while (0)
+#endif
+
+#if LOG_COMPILED_LEVEL <= LOG_LVL_ERROR
+#define LOG_ERROR(logger, fmt, ...) (logger).log(LogLevel::ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#else
+#define LOG_ERROR(logger, fmt, ...) \
+    do                              \
+    {                               \
+    } while (0)
+#endif
+
+// Fatal 通常始终保留
+#define LOG_FATAL(logger, fmt, ...) (logger).log(LogLevel::FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__)

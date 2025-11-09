@@ -29,25 +29,29 @@ namespace
     {
         switch (lv)
         {
-        case LogLevel::LOG_INFO:
+        case LogLevel::DEBUG:
             return "INFO";
-        case LogLevel::LOG_DEBUG:
+        case LogLevel::INFO:
             return "DEBUG";
-        case LogLevel::LOG_WARN:
+        case LogLevel::WARN:
             return "WARN";
-        case LogLevel::LOG_ERROR:
+        case LogLevel::ERROR:
             return "ERROR";
-        case LogLevel::LOG_FATAL:
+        case LogLevel::FATAL:
             return "FATAL";
+        case LogLevel::OFF:
+            return "OFF";
         }
         return "UNKNOWN";
     }
 } // namespace
 
 // ======= Logger ===========
+// Logger private
 Logger::Logger() : m_stopped(false)
 {
     m_file.open("app.log", std::ios::app); // 追加模式
+    m_runtime_level.store(static_cast<int>(LogLevel::DEBUG), std::memory_order_relaxed);
     m_formatter = std::make_shared<DefaultFormatter>();
     backend_thread = std::thread(&Logger::BackendLoop, this);
 }
@@ -57,6 +61,7 @@ Logger::~Logger()
     if (m_file.is_open())
         m_file.close();
 }
+
 void Logger::BackendLoop()
 {
     std::vector<EntryPtr> batch;
@@ -64,7 +69,7 @@ void Logger::BackendLoop()
     {
         if (!batch.empty())
         {
-            for(size_t i=0;i<batch.size();++i)
+            for (size_t i = 0; i < batch.size(); ++i)
             {
                 Write2File(*batch[i]);
             }
@@ -75,6 +80,28 @@ void Logger::BackendLoop()
     m_file.flush();
 }
 
+void Logger::Write2File(const LogEntry &entry)
+{
+    std::shared_ptr<Formatter> formatter;
+    {
+        std::lock_guard<std::mutex> lock(m_formatter_mtx);
+        formatter = m_formatter;
+    }
+    if (!formatter)
+    {
+        formatter = std::make_shared<DefaultFormatter>();
+    }
+
+    m_file << formatter->format(entry) << '\n';
+}
+
+// 获取当前时间（纳秒）-> 2.2 修改为单调递增,避免回拨
+uint64_t Logger::getCurrentTimeNs()
+{
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+// Logger Public
 void Logger::log(LogLevel level, const char *filename, int line, const char *fmt, ...)
 {
     auto entry = std::unique_ptr<LogEntry>(new LogEntry());
@@ -102,26 +129,13 @@ void Logger::setFormatter(std::unique_ptr<Formatter> formatter)
     m_formatter = std::shared_ptr<Formatter>(std::move(formatter));
 }
 
-void Logger::Write2File(const LogEntry &entry)
+void Logger::setLevel(LogLevel lvl)
 {
-    std::shared_ptr<Formatter> formatter;
-    {
-        std::lock_guard<std::mutex> lock(m_formatter_mtx);
-        formatter = m_formatter;
-    }
-    if (!formatter)
-    {
-        formatter = std::make_shared<DefaultFormatter>();
-    }
-
-    m_file << formatter->format(entry) << '\n';
+    m_runtime_level.store(static_cast<int>(lvl), std::memory_order_relaxed);
 }
-
-// 获取当前时间（纳秒）-> 2.2 修改为单调递增,避免回拨
-uint64_t Logger::getCurrentTimeNs()
+LogLevel Logger::level() const
 {
-    using namespace std::chrono;
-    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+    return static_cast<LogLevel>(m_runtime_level.load(std::memory_order_relaxed));
 }
 
 void Logger::stop()
@@ -138,14 +152,13 @@ void Logger::stop()
 
 // ======= AsyncQueue===========
 
-
 // 返回 true 表示成功入队；在已关闭状态下返回 false（调用方应自行回收 entry）
 bool AsyncQueue::push(EntryPtr e)
 {
     std::unique_lock<std::mutex> lock(m_mtx);
     if (m_closed)
         return false;
-    const bool was_empty = m_write_buf->empty();       // 关键：入队前记录
+    const bool was_empty = m_write_buf->empty(); // 关键：入队前记录
     m_write_buf->push_back(std::move(e));
     // 触发条件：从空到非空，或恰好达到阈值
     if (was_empty || m_write_buf->size() == kBatchThreshold)
