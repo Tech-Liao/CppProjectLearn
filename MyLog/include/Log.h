@@ -77,6 +77,17 @@ private:
     static const size_t kBatchThreshold = 256; // 触发切批/唤醒的阈值（可调）
 };
 
+struct LogRotateOptions
+{
+    // 日志文件应该为这样:app_YYYYMMDD_0.log
+    std::string dir = ".";            // 日志目录
+    std::string base = "app";         // 日志基础名
+    std::string ext = "log";          // 扩展名
+    uint64_t max_bytes = 10ull << 20; // 10MB
+    bool daily = false;               // 标志符号1 先不启动天
+    size_t max_backups = 0;           // 标志符号1:是否清理log---0=先不清理
+};
+
 class Logger
 {
 public:
@@ -91,6 +102,11 @@ public:
     void setFormatter(std::unique_ptr<Formatter> formatter);
     void stop();
 
+    // 日志文件存储设置
+    void setRotateOptions(const LogRotateOptions &opt);
+    // 重新打开
+    void reopen();
+
 private:
     std::ofstream m_file;
     AsyncQueue m_queue;
@@ -99,6 +115,15 @@ private:
     std::thread backend_thread;
     std::atomic<bool> m_stopped{false}; // 幂等标记
     std::atomic<int> m_runtime_level;   // 运行时阈值（与 LogLevel 的整数值对齐）
+
+    LogRotateOptions m_rot_opt;
+    uint64_t m_writted_bytes = 0; // 当前已写入字节
+    std::string m_cur_data;       // 当前日期
+    int m_seq = 0;                // 当天序号
+    std::atomic<bool> m_need_reopen{false};
+    std::mutex m_rot_mtx;
+
+private:
     Logger();
     ~Logger();
     // 禁止拷贝和移动（Cpp11 = delete）
@@ -106,12 +131,15 @@ private:
     Logger &operator=(const Logger &) = delete;
     Logger(Logger &&) = delete;
     Logger &operator=(Logger &&) = delete;
-    void Write2File(const LogEntry &entry);
+    size_t Write2File(const LogEntry &entry);
     // 获取当前时间（纳秒）
     uint64_t getCurrentTimeNs();
     void BackendLoop();
-};
 
+    // ——按大小轮转：批量写入前的检查与实际轮转——
+    void maybeRotateBeforeWrite_(size_t estimated_batch_bytes);
+    void rotateNow_(const LogRotateOptions &opt);
+};
 
 #if LOG_COMPILED_LEVEL <= LOG_LVL_DEBUG
 #define LOG_DEBUG(logger, fmt, ...) (logger).log(LogLevel::DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)

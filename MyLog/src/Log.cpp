@@ -30,9 +30,9 @@ namespace
         switch (lv)
         {
         case LogLevel::DEBUG:
-            return "INFO";
-        case LogLevel::INFO:
             return "DEBUG";
+        case LogLevel::INFO:
+            return "INFO";
         case LogLevel::WARN:
             return "WARN";
         case LogLevel::ERROR:
@@ -44,14 +44,51 @@ namespace
         }
         return "UNKNOWN";
     }
+    static std::string joinPath(const std::string &dir, const std::string &name)
+    {
+#ifdef _WIN32
+        const char sep = '\\';
+#else
+        const char sep = '/';
+#endif
+        if (dir.empty())
+            return name;
+        if (dir.back() == '/' || dir.back() == '\\')
+            return dir + name;
+        return dir + sep + name;
+    }
+    static std::string formatYMD(std::time_t t)
+    {
+        std::tm tmv;
+#if defined(_WIN32)
+        localtime_s(&tmv, &t);
+#else
+        localtime_r(&t, &tmv);
+#endif
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%04d%02d%02d",
+                      tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
+        return std::string(buf);
+    }
+    static uint64_t fileSizeIfExists(const std::string &path)
+    {
+        std::ifstream f(path.c_str(), std::ios::binary | std::ios::ate);
+        if (!f)
+            return 0;
+        return static_cast<uint64_t>(f.tellg());
+    }
 } // namespace
 
 // ======= Logger ===========
 // Logger private
 Logger::Logger() : m_stopped(false)
 {
-    m_file.open("app.log", std::ios::app); // 追加模式
     m_runtime_level.store(static_cast<int>(LogLevel::DEBUG), std::memory_order_relaxed);
+    m_rot_opt = LogRotateOptions{};
+    const std::string live = joinPath(m_rot_opt.dir, m_rot_opt.base + "." + m_rot_opt.ext);
+    m_file.open(live.c_str(), std::ios::out | std::ios::app);
+    m_writted_bytes = fileSizeIfExists(live);
+    m_cur_data = formatYMD(std::time(nullptr)); // 先存今天（里程碑2用）
     m_formatter = std::make_shared<DefaultFormatter>();
     backend_thread = std::thread(&Logger::BackendLoop, this);
 }
@@ -69,9 +106,17 @@ void Logger::BackendLoop()
     {
         if (!batch.empty())
         {
+
+            size_t est = 0;
             for (size_t i = 0; i < batch.size(); ++i)
             {
-                Write2File(*batch[i]);
+                est += 64;
+                est += std::strlen(batch[i]->m_msg) + 1;
+            }
+            maybeRotateBeforeWrite_(est);
+            for (size_t i = 0; i < batch.size(); ++i)
+            {
+                m_writted_bytes = Write2File(*batch[i]);
             }
             batch.clear();
             m_file.flush();
@@ -80,7 +125,7 @@ void Logger::BackendLoop()
     m_file.flush();
 }
 
-void Logger::Write2File(const LogEntry &entry)
+size_t Logger::Write2File(const LogEntry &entry)
 {
     std::shared_ptr<Formatter> formatter;
     {
@@ -91,8 +136,9 @@ void Logger::Write2File(const LogEntry &entry)
     {
         formatter = std::make_shared<DefaultFormatter>();
     }
-
-    m_file << formatter->format(entry) << '\n';
+    const std::string line = formatter->format(entry);
+    m_file << line << "\n";
+    return line.size() + 1;
 }
 
 // 获取当前时间（纳秒）-> 2.2 修改为单调递增,避免回拨
@@ -101,9 +147,48 @@ uint64_t Logger::getCurrentTimeNs()
     using namespace std::chrono;
     return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
 }
+// ——按大小轮转：批量写入前的检查与实际轮转——
+void Logger::maybeRotateBeforeWrite_(size_t estimated_batch_bytes)
+{
+    LogRotateOptions snap;
+    {
+        std::lock_guard<std::mutex> lock(m_rot_mtx);
+        snap = m_rot_opt;
+    }
+    if (snap.max_bytes == 0)
+        return;
+    if (m_writted_bytes + estimated_batch_bytes <= snap.max_bytes)
+        return;
+    rotateNow_(snap);
+}
+void Logger::rotateNow_(const LogRotateOptions &opt)
+{
+    // 关闭旧文件
+    m_file.flush();
+    m_file.close();
+    // 生成历史名
+    const std::string today = formatYMD(std::time(nullptr));
+    if (m_cur_data != today)
+    {
+        m_cur_data = today;
+        m_seq = 0;
+    }
+    const std::string rotated = joinPath(opt.dir,
+                                         opt.base + "_" + m_cur_data + "_" + std::to_string(m_seq++) + "." + opt.ext);
+    const std::string live = joinPath(opt.dir, opt.base + "." + opt.ext);
+    // 重命名为历史文件
+    (void)std::rename(live.c_str(),rotated.c_str());
+    m_file.open(live.c_str(), std::ios::binary | std::ios::app);
+    m_writted_bytes = fileSizeIfExists(live);
+}
+
 // Logger Public
 void Logger::log(LogLevel level, const char *filename, int line, const char *fmt, ...)
 {
+    if (static_cast<int>(level) < m_runtime_level.load(std::memory_order_relaxed))
+    {
+        return; // 低于运行时阈值：直接丢弃，避免格式化与入队
+    }
     auto entry = std::unique_ptr<LogEntry>(new LogEntry());
     entry->m_timestamp_ns = getCurrentTimeNs();
     entry->m_wall_time = std::chrono::system_clock::now(); // 墙钟时间展示
@@ -148,6 +233,12 @@ void Logger::stop()
     m_queue.close(); // 进入关闭+清空阶段
     if (backend_thread.joinable())
         backend_thread.join(); // 等后台线程清空并退出
+}
+
+void Logger::setRotateOptions(const LogRotateOptions &opt)
+{
+    std::lock_guard<std::mutex> lock(m_rot_mtx);
+    m_rot_opt = opt; // 简单拷贝；若在运行中调用，生效点是下个批次写入前
 }
 
 // ======= AsyncQueue===========

@@ -36,3 +36,14 @@ target_compile_features(SingleLog PRIVATE cxx_std_11)
 
 
 
+add_executable(rotate
+    test_rotate_size.cpp
+    ${CMAKE_SOURCE_DIR}/src/Log.cpp
+)
+# ========== 关键1：编译时加 -pthread ==========
+add_compile_options(-pthread)
+
+# ========== 关键2：链接时加 -pthread ==========
+target_link_libraries(rotate PRIVATE Threads::Threads)
+target_include_directories(rotate PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(rotate PRIVATE cxx_std_11)
