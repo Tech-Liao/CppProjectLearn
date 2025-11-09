@@ -22,6 +22,7 @@ enum class LogLevel
 struct LogEntry
 {
     uint64_t m_timestamp_ns;
+    std::chrono::system_clock::time_point m_wall_time; //用于可读时间,实现时间单调性
     std::thread::id m_id;
     LogLevel m_level;
     const char *m_filename;

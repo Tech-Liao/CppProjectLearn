@@ -3,18 +3,26 @@
 
 namespace
 {
-    void formatTimestamp(uint64_t ns, char *buf)
+    static std::string formatWallTime(std::chrono::system_clock::time_point tp)
     {
-        time_t seconds = ns / 1000000000ULL;
-        unsigned long microseconds = (ns % 1000000000ULL) / 1000;
+        using namespace std::chrono;
+        const auto sec_tp = time_point_cast<seconds>(tp);
+        const auto nsec = duration_cast<nanoseconds>(tp - sec_tp).count();
+        const time_t sec = system_clock::to_time_t(sec_tp);
 
-        struct tm tm_info;
-        localtime_r(&seconds, &tm_info);
-
-        char time_str[32];
-        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_info);
-
-        snprintf(buf, 32, "%s.%06lu", time_str, microseconds);
+#if defined(_WIN32)
+        tm t{};
+        localtime_t(&t, &sec);
+#else
+        tm t{};
+        localtime_r(&sec, &t);
+#endif
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d:%09lld",
+                      t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                      t.tm_hour, t.tm_min, t.tm_sec,
+                      static_cast<long long>(nsec));
+        return std::string(buf);
     }
 
     const char *levelToString(LogLevel lv)
@@ -76,6 +84,7 @@ void Logger::log(LogLevel level, const char *filename, int line, const char *fmt
 {
     auto entry = std::unique_ptr<LogEntry>(new LogEntry());
     entry->m_timestamp_ns = getCurrentTimeNs();
+    entry->m_wall_time = std::chrono::system_clock::now(); // 墙钟时间展示
     entry->m_id = std::this_thread::get_id();
     entry->m_level = level;
     entry->m_filename = filename;
@@ -113,13 +122,11 @@ void Logger::Write2File(const LogEntry &entry)
     m_file << formatter->format(entry) << '\n';
 }
 
-// 获取当前时间（纳秒）
+// 获取当前时间（纳秒）-> 2.2 修改为单调递增,避免回拨
 uint64_t Logger::getCurrentTimeNs()
 {
-    auto now = std::chrono::high_resolution_clock::now();
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               now.time_since_epoch())
-        .count();
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
 void AsyncQueue::push(std::unique_ptr<LogEntry> entry)
@@ -161,11 +168,10 @@ void AsyncQueue::stop()
 
 std::string DefaultFormatter::format(const LogEntry &entry) const
 {
-    char time_buf[32];
-    formatTimestamp(entry.m_timestamp_ns, time_buf);
+    const std::string ts = formatWallTime(entry.m_wall_time);
 
     std::ostringstream oss;
-    oss << "[" << time_buf << "] "
+    oss << "[" << ts << "] "
         << "[" << entry.m_id << "] "
         << "[" << levelToString(entry.m_level) << "] "
         << "[" << entry.m_filename << ":" << entry.m_line << "] "
