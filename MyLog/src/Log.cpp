@@ -1,8 +1,45 @@
 #include "Log.h"
+#include <sstream>
+
+namespace
+{
+    void formatTimestamp(uint64_t ns, char *buf)
+    {
+        time_t seconds = ns / 1000000000ULL;
+        unsigned long microseconds = (ns % 1000000000ULL) / 1000;
+
+        struct tm tm_info;
+        localtime_r(&seconds, &tm_info);
+
+        char time_str[32];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_info);
+
+        snprintf(buf, 32, "%s.%06lu", time_str, microseconds);
+    }
+
+    const char *levelToString(LogLevel lv)
+    {
+        switch (lv)
+        {
+        case LogLevel::LOG_INFO:
+            return "INFO";
+        case LogLevel::LOG_DEBUG:
+            return "DEBUG";
+        case LogLevel::LOG_WARN:
+            return "WARN";
+        case LogLevel::LOG_ERROR:
+            return "ERROR";
+        case LogLevel::LOG_FATAL:
+            return "FATAL";
+        }
+        return "UNKNOWN";
+    }
+} // namespace
 
 Logger::Logger()
 {
     m_file.open("app.log", std::ios::app); // 追加模式
+    m_formatter = std::make_shared<DefaultFormatter>();
     backend_thread = std::thread(&Logger::BackendLoop, this);
 }
 Logger::~Logger()
@@ -52,18 +89,28 @@ void Logger::log(LogLevel level, const char *filename, int line, const char *fmt
     // ✅ 正确：push到队列，立即返回
     m_queue.push(std::move(entry));
 }
+
+void Logger::setFormatter(std::unique_ptr<Formatter> formatter)
+{
+    if (!formatter)
+        return;
+    std::lock_guard<std::mutex> lock(m_formatter_mtx);
+    m_formatter = std::shared_ptr<Formatter>(std::move(formatter));
+}
+
 void Logger::Write2File(const LogEntry &entry)
 {
-    // 1. 把时间戳（纳秒数）格式化成 "2025-11-08 14:30:25.123456"
-    char time_buf[32];
-    formatTime(entry.m_timestamp_ns, time_buf); // 你之前实现的函数
+    std::shared_ptr<Formatter> formatter;
+    {
+        std::lock_guard<std::mutex> lock(m_formatter_mtx);
+        formatter = m_formatter;
+    }
+    if (!formatter)
+    {
+        formatter = std::make_shared<DefaultFormatter>();
+    }
 
-    // 2. 拼接成一行日志
-    m_file << "[" << time_buf << "] "
-           << "[" << entry.m_id << "] "              // thread::id 可以直接输出
-           << "[" << toString(entry.m_level) << "] " // 级别转字符串
-           << "[" << entry.m_filename << ":" << entry.m_line << "] "
-           << entry.m_msg << '\n'; // 用'\n'避免频繁flush
+    m_file << formatter->format(entry) << '\n';
 }
 
 // 获取当前时间（纳秒）
@@ -73,45 +120,6 @@ uint64_t Logger::getCurrentTimeNs()
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                now.time_since_epoch())
         .count();
-}
-
-// 格式化时间戳为字符串
-void Logger::formatTime(uint64_t ns, char *buf)
-{
-    // 第一步：纳秒 → 秒 + 微秒
-    // 1秒 = 1,000,000,000 纳秒
-    time_t seconds = ns / 1000000000ULL;                      // 秒部分
-    unsigned long microseconds = (ns % 1000000000ULL) / 1000; // 微秒部分（只保留6位）
-
-    // 第二步：秒 → tm结构体（年月日时分秒）
-    struct tm tm_info;
-    localtime_r(&seconds, &tm_info); // localtime_r 是线程安全的
-
-    // 第三步：格式化日期时间部分
-    char time_str[32];
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_info);
-
-    // 第四步：拼接毫秒部分
-    snprintf(buf, 32, "%s.%06lu", time_str, microseconds);
-}
-
-// 日志级别转字符串
-const char *Logger::toString(LogLevel lv)
-{
-    switch (lv)
-    {
-    case LogLevel::LOG_INFO:
-        return "INFO";
-    case LogLevel::LOG_DEBUG:
-        return "DEBUG";
-    case LogLevel::LOG_WARN:
-        return "WARN";
-    case LogLevel::LOG_ERROR:
-        return "ERROR";
-    case LogLevel::LOG_FATAL:
-        return "FATAL";
-    }
-    return "UNKNOWN";
 }
 
 void AsyncQueue::push(std::unique_ptr<LogEntry> entry)
@@ -149,4 +157,18 @@ void AsyncQueue::stop()
     std::lock_guard<std::mutex> lock(m_mtx);
     m_stop = true;
     m_cv.notify_all(); // 唤醒所有等待线程
+}
+
+std::string DefaultFormatter::format(const LogEntry &entry) const
+{
+    char time_buf[32];
+    formatTimestamp(entry.m_timestamp_ns, time_buf);
+
+    std::ostringstream oss;
+    oss << "[" << time_buf << "] "
+        << "[" << entry.m_id << "] "
+        << "[" << levelToString(entry.m_level) << "] "
+        << "[" << entry.m_filename << ":" << entry.m_line << "] "
+        << entry.m_msg;
+    return oss.str();
 }

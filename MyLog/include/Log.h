@@ -28,6 +28,19 @@ struct LogEntry
     int m_line;
     char m_msg[256];
 };
+
+class Formatter
+{
+public:
+    virtual ~Formatter() = default;
+    virtual std::string format(const LogEntry &entry) const = 0;
+};
+
+class DefaultFormatter : public Formatter
+{
+public:
+    std::string format(const LogEntry &entry) const override;
+};
 // 双缓冲队列
 class AsyncQueue
 {
@@ -53,10 +66,13 @@ public:
         return inst;
     }
     void log(LogLevel level, const char *filename, int line, const char *fmt, ...);
+    void setFormatter(std::unique_ptr<Formatter> formatter);
 
 private:
     std::ofstream m_file;
     AsyncQueue m_queue;
+    std::shared_ptr<Formatter> m_formatter;
+    mutable std::mutex m_formatter_mtx;
     void BackendLoop();
     std::thread backend_thread;
     Logger();
@@ -69,12 +85,6 @@ private:
     void Write2File(const LogEntry &entry);
     // 获取当前时间（纳秒）
     uint64_t getCurrentTimeNs();
-
-    // 格式化时间戳为字符串
-    void formatTime(uint64_t ns, char *buf);
-
-    // 日志级别转字符串
-    const char *toString(LogLevel lv);
 };
 
 #define LOG_INFO(fmt, ...) \
