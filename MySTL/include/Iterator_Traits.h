@@ -11,7 +11,7 @@ namespace my
         using value_type = typename It::value_type;
         using pointer = typename It::pointer;
         using reference = typename It::reference;
-        using iterator_category = typename It::iterator::category
+        using iterator_category = typename It::iterator::category;
     };
     template <class T>
     struct iterator_traits<T *>
@@ -84,11 +84,23 @@ namespace my
                 --it;
         }
     }
-    template<class It,class Dist>
-    inline void advance(It &it,Dist n)
+    template <class It, class Dist>
+    inline void advance(It &it, Dist n)
     {
         using category = typename iterator_traits<It>::iterator_category;
-        advance_impl(it,n,category());
+        advance_impl(it, n, category());
     }
-
-};
+    // -------- next/prev（基于 advance）--------
+    template <class It>
+    inline It next(It it, typename iterator_traits<It>::difference_type n = 1)
+    {
+        advance(it, n);
+        return it;
+    }
+    template <class It>
+    inline It prev(It it, typename iterator_traits<It>::difference_type n = 1)
+    {
+        advance(it, -n);
+        return it;
+    }
+}
