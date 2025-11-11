@@ -1,9 +1,10 @@
 #include <cassert>
 #include <iostream>
 #include <vector>
-#include "type_traits.h"
+
 #include "Iterator_Traits.h"
 #include "Reverse_iterator.h"
+#include "type_traits.h"
 
 int main() {
     int a[]{1, 2, 3, 4, 5};
