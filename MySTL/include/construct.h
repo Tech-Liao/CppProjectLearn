@@ -23,14 +23,12 @@ inline void __destroy(ForwardIterator first, ForwardIterator last, T *) {
     ////
 }
 template <class ForwardIterator>
-inline void __destroy_aux(ForwardIterator first, ForwardIterator last,
-                          __false_type) {
+inline void __destroy_aux(ForwardIterator first, ForwardIterator last) {
     ////
 }
 
 template <class ForwardIterator>
-inline void __destroy_aux(ForwardIterator first, ForwardIterator last,
-                          __true_type) {
+inline void __destroy_aux(ForwardIterator first, ForwardIterator last) {
     ///
 }
 

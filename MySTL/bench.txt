@@ -1,0 +1,17 @@
+N_push=500000, N_front=80000, N_mid=60000, N_val=800000
+
+Case                                 | Ops       | Time(ms)   | Throughput(ops/s)
+--------------------------------------------------------------------------------
+vector push_back(no reverse)         | ops=500000    time=11.54      ms  (43335066.7 ops/s)  checksum=249991539
+vector push_back                     | ops=500000    time=8.78       ms  (56960583.3 ops/s)  checksum=249991539
+list push_back                       | ops=500000    time=44.26      ms  (11297903.1 ops/s)  checksum=249991539
+vector insert at begin (simulate push_front) | ops=80000     time=281.62     ms  (284070.7 ops/s)  checksum=3199960000
+list push_front                      | ops=80000     time=3.77       ms  (21197668.3 ops/s)  checksum=3199960000
+vector insert at random position     | ops=60000     time=69.92      ms  (858184.9 ops/s)  checksum=902066160
+list insert at random position       | ops=60000     time=7256.18    ms  (8268.8 ops/s)  checksum=902066160
+vector erase(begin) repeatedly       | ops=80000     time=271.10     ms  (295099.5 ops/s)  checksum=3199960000
+list pop_front repeatedly            | ops=80000     time=4.04       ms  (19787286.7 ops/s)  checksum=3199960000
+vector erase-remove(value)           | ops=800000    time=7.54       ms  (106030483.8 ops/s)  checksum=5447
+list remove(value)                   | ops=800000    time=67.46      ms  (11859055.1 ops/s)  checksum=4993
+
+ignore: 249993141
