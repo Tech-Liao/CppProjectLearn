@@ -6,6 +6,9 @@
 #include <cstring>
 #include <iostream>
 
+#include "common/json.hpp"
+#include "network/Codec.h"
+using json = nlohmann::json;
 static void SetNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
@@ -47,16 +50,35 @@ void Connection::Read() {
             if (close_callback_) {
                 close_callback_(fd_);
             }
-            break;
+            return;
         } else {
             std::cerr << "Read error on fd: " << fd_ << std::endl;
             if (close_callback_) close_callback_(fd_);
+            return;
+        }
+    }
+    while (true) {
+        uint32_t msg_type = 0;
+        std::string msg_body = "";
+        bool success = Codec::ParseMessage(&read_buffer_, msg_type, msg_body);
+        if (!success) {
+            // 解析失败
             break;
         }
-        if (read_buffer_.ReadableBytes() > 0) {
-            std::string msg = read_buffer_.RetrieveAllAsString();
-            std::cout << "Received from fd " << fd_ << ":" << msg << std::endl;
-            Send("Echo: " + msg);
+        std::cout << "[Codec] 成功拆出一个完整包！Type: " << msg_type
+                  << ", Body: " << msg_body << std::endl;
+        try {
+            // json 反序列化
+            json req_json = json::parse(msg_body);
+            // 构造回包 json
+            json resp_json;
+            resp_json["success"] = true;
+            resp_json["msg"] = "Server received: " + req_json.dump();
+            std::string response_packet =
+                Codec::PackMessage(msg_type, resp_json.dump());
+            write(fd_, response_packet.data(), response_packet.size());
+        } catch (json::parse_error& e) {
+            std::cerr << "Json 解析失败:" << e.what() << std::endl;
         }
     }
 }
