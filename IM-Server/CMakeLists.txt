@@ -13,8 +13,10 @@ set(SRC_FILES
     src/network/Buffer.cpp
     src/network/Connection.cpp
     src/network/Codec.cpp
+    src/common/Config.cpp
+    src/storage/MySQLManager.cpp
 )
 # 生成可执行文件
 add_executable(im_server ${SRC_FILES})
-# 链接多线程库
-target_link_libraries(im_server pthread)
+# 链接多线程库与spdlog
+target_link_libraries(im_server pthread spdlog mysqlclient)

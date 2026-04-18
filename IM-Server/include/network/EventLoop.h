@@ -1,11 +1,15 @@
 #ifndef EVENT_LOOP_H
 #define EVENT_LOOP_H
+#include <sys/types.h>
 #include <sys/epoll.h>
+
+// 【补充加在这里】
 
 #include <functional>
 #include <map>
 #include <vector>
-class EventLoop {
+class EventLoop
+{
 public:
     EventLoop();
     ~EventLoop();
@@ -21,7 +25,7 @@ public:
 private:
     int epoll_fd_;
     static const int MAX_EVENTS = 1024;
-    struct epoll_event events_[MAX_EVENTS];  // 接受就绪事件
+    struct epoll_event events_[MAX_EVENTS]; // 接受就绪事件
     bool quit_;
 
     // 保存fd与回调函数的映射
