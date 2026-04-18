@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 static void SetNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -56,13 +57,15 @@ void TcpServer::start() {
         int client_fd = accept(this->listen_fd_,
                                (struct sockaddr *)&client_addr, &client_len);
         if (client_fd != -1) {
-            // 客户端socket也设置成非阻塞
-            SetNonBlocking(client_fd);
-            std::cout << "epoll accepted new nonblocking connect! fd:"
-                      << client_fd << std::endl;
-            const char *msg = "Hello from epoll async Server!\n";
-            send(client_fd, msg, strlen(msg), 0);
-            close(client_fd);
+            std::cout << "New Client Connected! fd: " << client_fd << std::endl;
+            // 1、创建专属connection对象
+            std::unique_ptr<Connection> conn(
+                new Connection(loop_.get(), client_fd));
+            // 2、告诉Connection
+            conn->SetCloseCallback(
+                [this](int fd) { this->connections_.erase(fd); });
+            // 3、将其保存到tcp中
+            connections_[client_fd] = std::move(conn);
         }
     });
     std::cout << "IM server start with epoll" << std::endl;

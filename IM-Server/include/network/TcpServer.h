@@ -5,9 +5,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <map>
 #include <memory>  // 引入智能指针头文件
 #include <string>
 
+#include "network/Connection.h"
 #include "network/EventLoop.h"
 
 class TcpServer {
@@ -22,5 +24,6 @@ private:
     uint16_t port_;
     int listen_fd_;  // 监听socket文件描述符
     std::unique_ptr<EventLoop> loop_;
+    std::map<int, std::unique_ptr<Connection>> connections_;
 };
 #endif

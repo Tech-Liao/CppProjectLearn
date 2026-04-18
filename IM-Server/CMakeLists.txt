@@ -10,6 +10,8 @@ set(SRC_FILES
     src/main.cpp
     src/network/TcpServer.cpp
     src/network/EventLoop.cpp
+    src/network/Buffer.cpp
+    src/network/Connection.cpp
 )
 # 生成可执行文件
 add_executable(im_server ${SRC_FILES})
