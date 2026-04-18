@@ -1,14 +1,27 @@
 #include "network/TcpServer.h"
 
+#include <fcntl.h>
+
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
-
+static void SetNonBlocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        std::cerr << "fcntl get failed" << std::endl;
+        return;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        std::cerr << "fcntl set failed" << std::endl;
+    }
+}
 TcpServer::TcpServer(const std::string &ip, uint16_t port)
-    : ip_(ip), port_(port), listen_fd_(-1) {
+    : ip_(ip), port_(port), listen_fd_(-1), loop_(new EventLoop()) {
     // 1、创建tcp socket
     listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ == -1) throw std::runtime_error("创建失败");
+    // 增加非阻塞
+    SetNonBlocking(listen_fd_);
     // 2、设置端口复用
     int opt = 1;
     setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -37,24 +50,21 @@ TcpServer::~TcpServer() {
     }
 }
 void TcpServer::start() {
-    std::cout << "等待客户端链接" << std::endl;
-    while (true) {
-        // 5、阻塞等待客户端链接
+    loop_->AddEvent(listen_fd_, EPOLLIN, [this]() {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
-        int client_fd =
-            accept(listen_fd_, (struct sockaddr *)&client_addr, &client_len);
-        if (client_fd == -1) {
-            std::cerr << "accept失败" << std::endl;
-            continue;
+        int client_fd = accept(this->listen_fd_,
+                               (struct sockaddr *)&client_addr, &client_len);
+        if (client_fd != -1) {
+            // 客户端socket也设置成非阻塞
+            SetNonBlocking(client_fd);
+            std::cout << "epoll accepted new nonblocking connect! fd:"
+                      << client_fd << std::endl;
+            const char *msg = "Hello from epoll async Server!\n";
+            send(client_fd, msg, strlen(msg), 0);
+            close(client_fd);
         }
-        // 打印新连接的信息
-        std::string client_ip = inet_ntoa(client_addr.sin_addr);
-        uint16_t client_port = ntohs(client_addr.sin_port);
-        std::cout << "新连接来自:" << client_ip << ":" << client_port
-                  << "(fd:" << client_fd << ")" << std::endl;
-        const char *msg = "欢迎来到IM Server\n";
-        send(client_fd, msg, strlen(msg), 0);
-        close(client_fd);
-    }
+    });
+    std::cout << "IM server start with epoll" << std::endl;
+    loop_->Loop();
 }

@@ -9,6 +9,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 set(SRC_FILES
     src/main.cpp
     src/network/TcpServer.cpp
+    src/network/EventLoop.cpp
 )
 # 生成可执行文件
 add_executable(im_server ${SRC_FILES})
