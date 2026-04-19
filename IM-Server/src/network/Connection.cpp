@@ -100,6 +100,24 @@ void Connection::Read() {
                         spdlog::info(
                             "User '{}' login and registered in UserManager.",
                             username);
+                        std::string response_packet =
+                            Codec::PackMessage(msg_type, resp_json.dump());
+                        Send(response_packet);
+                        // 获取离线消息
+                        auto offline_msgs =
+                            MySQLManager::GetInstance()
+                                .GetAndClearOfflineMessages(username);
+                        if (!offline_msgs.empty()) {
+                            spdlog::info(
+                                "pushing {} offline message to user '{}'",
+                                offline_msgs.size(), username);
+                            for (const auto &msg_str : offline_msgs) {
+                                std::string push_packet =
+                                    Codec::PackMessage(2, msg_str);
+                                Send(push_packet);
+                            }
+                        }
+                        continue;
                     } else {
                         resp_json["code"] = 401;
                         resp_json["msg"] = "Invalid username or password";
@@ -130,8 +148,22 @@ void Connection::Read() {
                         resp_json["msg"] = "Message forwarded successfully.";
                     } else {
                         // 目标不在线
-                        resp_json["code"] = 404;
-                        resp_json["msg"] = "User is offline.";
+                        spdlog::info(
+                            "User '{}' if offline. Saving message to database",
+                            target_user);
+                        bool saved =
+                            MySQLManager::GetInstance().InsertOfflineMessage(
+                                this->current_user_, target_user, content);
+                        if (saved) {  // 用户离线，存放数据库
+                            resp_json["code"] = 200;
+                            resp_json["msg"] =
+                                "User offline. Message save to server "
+                                "successfully.";
+                        } else {  // 数据库挂了
+                            resp_json["code"] = 500;
+                            resp_json["msg"] =
+                                "Internal server erro.Failed to save message";
+                        }
                     }
                 }
                 // 给发送者回执包
