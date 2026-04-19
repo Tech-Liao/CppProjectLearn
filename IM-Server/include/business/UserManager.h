@@ -19,5 +19,6 @@ public:
     void AddUser(const std::string &username, Connection *conn);
     void RemoveUser(const std::string &username);
     Connection *GetConnection(const std::string &username);
+    void CheckTimeouts(int timeout_seconds);
 };
 #endif

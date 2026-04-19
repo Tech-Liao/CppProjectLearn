@@ -139,3 +139,27 @@ std::vector<std::string> MySQLManager::GetAndClearOfflineMessages(
     }
     return messages;
 }
+
+std::unordered_map<int, std::unordered_set<std::string>>
+MySQLManager::GetAllGroupMembers() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<int, std::unordered_set<std::string>> result;
+    const char *query = "SELECT group_id,user_id FROM group_member";
+    if (mysql_query(conn_, query)) {
+        spdlog::error("Failed to select group members:{}.", mysql_error(conn_));
+        return result;
+    }
+    MYSQL_RES *res = mysql_store_result(conn_);
+    if (res == nullptr) return result;
+
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(res)) != nullptr) {
+        if (row[0] != nullptr && row[1] != nullptr) {
+            int group_id = std::stoi(row[0]);
+            std::string user_id = row[1];
+            result[group_id].insert(user_id);
+        }
+    }
+    mysql_free_result(res);
+    return result;
+}

@@ -16,6 +16,7 @@ set(SRC_FILES
     src/common/Config.cpp
     src/storage/MySQLManager.cpp
     src/business/UserManager.cpp
+    src/business/GroupManager.cpp
 )
 # 生成可执行文件
 add_executable(im_server ${SRC_FILES})

@@ -11,6 +11,7 @@
 #include "common/json.hpp"
 #include "network/Codec.h"
 #include "storage/MySQLManager.h"
+#include "business/GroupManager.h"
 using json = nlohmann::json;
 static void SetNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -77,6 +78,16 @@ void Connection::Read() {
         }
         std::cout << "[Codec] 成功拆出一个完整包！Type: " << msg_type
                   << ", Body: " << msg_body << std::endl;
+        this->UpdateActiveTime();
+        if (msg_type == 3) {
+            // 3 代表ping
+            spdlog::debug("Received Ping from fd: {}", fd_);
+            // 立即回一个type =4（pong）
+            std::string pong_json = "{\"msg\":\"pong\"}";
+            std::string pong_packet = Codec::PackMessage(4, pong_json);
+            Send(pong_packet);
+            continue;
+        }
         try {
             // json 反序列化
             json req_json = json::parse(msg_body);
@@ -165,6 +176,52 @@ void Connection::Read() {
                                 "Internal server erro.Failed to save message";
                         }
                     }
+                } else if (cmd == "group_chat") {  // 群聊
+                    int group_id = req_json["group_id"];
+                    std::string content = req_json["msg"];
+                    // 1、验证：发送者自己必须在群里
+                    if (!GroupManager::GetInstance().IsUserInGroup(
+                            group_id, current_user_)) {
+                        resp_json["code"] = 403;
+                        resp_json["msg"] =
+                            "Permission denied.You are not in the group";
+                        Send(Codec::PackMessage(msg_type, resp_json.dump()));
+                        continue;
+                    }
+                    // 2、拿到群名单开始暴力裂变
+                    auto members =
+                        GroupManager::GetInstance().GetGroupMembers(group_id);
+                    int online_count = 0;
+                    int offline_count = 0;
+                    for (const auto &member : members) {
+                        if (member == current_user_) continue;
+                        json push_json;
+                        push_json["cmd"] = "push_group_chat";
+                        push_json["group_id"] = group_id;
+                        push_json["from"] = current_user_;
+                        push_json["msg"] = content;
+                        std::string push_packet =
+                            Codec::PackMessage(2, push_json.dump());
+                        // 3. 核心路由分支：去户口本查人
+                        Connection *target_conn =
+                            UserManager::GetInstance().GetConnection(member);
+                        if (target_conn != nullptr) {
+                            target_conn->Send(push_packet);
+                            online_count++;
+                        } else {
+                            MySQLManager::GetInstance().InsertOfflineMessage(
+                                current_user_, member, "[群聊] " + content);
+                            offline_count++;
+                        }
+                    }
+                    // 4. 给发送者回执
+                    resp_json["code"] = 200;
+                    resp_json["msg"] =
+                        "Group message sent! Online: " +
+                        std::to_string(online_count) +
+                        ", Offline saved: " + std::to_string(offline_count);
+                    Send(Codec::PackMessage(msg_type, resp_json.dump()));
+                    continue;
                 }
                 // 给发送者回执包
                 std::string response_packet =

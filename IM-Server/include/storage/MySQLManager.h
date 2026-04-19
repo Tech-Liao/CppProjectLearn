@@ -4,6 +4,8 @@
 
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 class MySQLManager {
 public:
@@ -25,6 +27,9 @@ public:
     // 提取并清理离线消息 (去掉 &，按值返回，依赖 C++ RVO 优化机制)
     std::vector<std::string> GetAndClearOfflineMessages(
         const std::string &receiver);
+    // 查询群所有成员
+    std::unordered_map<int, std::unordered_set<std::string>>
+    GetAllGroupMembers();
 
 private:
     MySQLManager();

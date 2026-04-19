@@ -1,5 +1,6 @@
 #ifndef CONNECTION_H
 #define CONNECTION_H
+#include <ctime>
 #include <functional>
 #include <memory>
 #include <string>
@@ -18,6 +19,10 @@ public:
     void Send(const std::string &msg);
 
     void SetCloseCallback(const CloseCallback &cb) { close_callback_ = cb; }
+    // 获取最后活跃时间
+    time_t GetLastActiveTime() const { return last_active_time_; }
+    // 更新活跃时间（只要收到任何数据就调用)
+    void UpdateActiveTime() { last_active_time_ = time(NULL); }
 
 private:
     EventLoop *loop_;
@@ -28,5 +33,7 @@ private:
     // int user_id = -1;
     // 【新增 2】：记住当前这个连接登录成功的用户名
     std::string current_user_;
+    // 记录最后一次收到包的时间
+    time_t last_active_time_;
 };
 #endif

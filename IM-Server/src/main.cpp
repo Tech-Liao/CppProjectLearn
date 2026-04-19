@@ -1,11 +1,14 @@
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <iostream>
+#include <thread>
 
+#include "business/GroupManager.h"
+#include "business/UserManager.h"
 #include "common/Config.h"
 #include "network/TcpServer.h"
 #include "storage/MySQLManager.h"  // 引入数据库管理器
-
 int main() {
     // 1. 初始化日志
     spdlog::set_level(spdlog::level::debug);
@@ -22,7 +25,8 @@ int main() {
         Config::GetInstance().GetDbHost(), Config::GetInstance().GetDbUser(),
         Config::GetInstance().GetDbPassword(),
         Config::GetInstance().GetDbName(), Config::GetInstance().GetDbPort());
-
+    // 唤醒群组大管家，让他把数据库里的群全背进内存！
+    GroupManager::GetInstance().InitLoadFromDB();
     if (db_ready) {
         // 数据库连上了，我们来查一下刚才在终端里插入的 'user1'
         spdlog::info("Start checking user credentials...");
@@ -42,12 +46,19 @@ int main() {
             "Failed to connect to MySQL. Server will start without DB "
             "support.");
     }
-
     // 4. 启动网络引擎
     std::string ip = Config::GetInstance().GetServerIp();
     uint16_t port = Config::GetInstance().GetServerPort();
     spdlog::info("Config loaded. Server will bind to {}:{}", ip, port);
 
+    // 增加后台巡逻兵线程
+    std::thread watchdog([]() {
+        spdlog::info("Heartbeat watchdog thread start.");
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+            UserManager::GetInstance().CheckTimeouts(30);
+        }
+    });
     try {
         TcpServer server(ip, port);
         server.start();
