@@ -26,5 +26,7 @@ private:
     CloseCallback close_callback_;
     // 未来要加的：用户登陆绑定的ID
     // int user_id = -1;
+    // 【新增 2】：记住当前这个连接登录成功的用户名
+    std::string current_user_;
 };
 #endif

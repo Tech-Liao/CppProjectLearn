@@ -1,13 +1,16 @@
 #include "network/Connection.h"
 
 #include <fcntl.h>
+#include <spdlog/spdlog.h>
 #include <unistd.h>
 
 #include <cstring>
 #include <iostream>
 
+#include "business/UserManager.h"
 #include "common/json.hpp"
 #include "network/Codec.h"
+#include "storage/MySQLManager.h"
 using json = nlohmann::json;
 static void SetNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -20,7 +23,7 @@ static void SetNonBlocking(int fd) {
     }
 }
 
-Connection::Connection(EventLoop* loop, int fd) : loop_(loop), fd_(fd) {
+Connection::Connection(EventLoop *loop, int fd) : loop_(loop), fd_(fd) {
     SetNonBlocking(fd_);
     loop_->AddEvent(fd_, EPOLLIN, [this]() { this->Read(); });
 }
@@ -46,7 +49,13 @@ void Connection::Read() {
             break;
         } else if (bytes_read == 0) {
             // 代表客户端主动断开了连接
-            std::cout << "client disconnected,fd:" << fd_ << std::endl;
+            spdlog::info("client disconnected,fd:{}", fd_);
+            if (!current_user_.empty()) {
+                // 在线用户本删除
+                UserManager::GetInstance().RemoveUser(current_user_);
+                spdlog::info("User '{}' removed from UserManager.",
+                             current_user_);
+            }
             if (close_callback_) {
                 close_callback_(fd_);
             }
@@ -57,6 +66,7 @@ void Connection::Read() {
             return;
         }
     }
+
     while (true) {
         uint32_t msg_type = 0;
         std::string msg_body = "";
@@ -72,18 +82,70 @@ void Connection::Read() {
             json req_json = json::parse(msg_body);
             // 构造回包 json
             json resp_json;
-            resp_json["success"] = true;
-            resp_json["msg"] = "Server received: " + req_json.dump();
-            std::string response_packet =
-                Codec::PackMessage(msg_type, resp_json.dump());
-            write(fd_, response_packet.data(), response_packet.size());
-        } catch (json::parse_error& e) {
-            std::cerr << "Json 解析失败:" << e.what() << std::endl;
+            // ======== 业务路由分发 ==========
+            if (msg_type == 1) {  // 登录请求
+                std::string cmd = req_json.value("cmd", "");
+                if (cmd == "login") {
+                    std::string username = req_json.value("username", "");
+                    std::string password = req_json.value("password", "");
+
+                    bool is_valid = MySQLManager::GetInstance().CheckUser(
+                        username, password);
+                    resp_json["cmd"] = "login_resp";
+                    if (is_valid) {
+                        resp_json["code"] = 200;
+                        resp_json["msg"] = "Login Success!";
+                        this->current_user_ = username;
+                        UserManager::GetInstance().AddUser(username, this);
+                        spdlog::info(
+                            "User '{}' login and registered in UserManager.",
+                            username);
+                    } else {
+                        resp_json["code"] = 401;
+                        resp_json["msg"] = "Invalid username or password";
+                    }
+                    std::string response_packet =
+                        Codec::PackMessage(msg_type, resp_json.dump());
+                    Send(response_packet);
+                }
+            } else if (msg_type == 2) {  // 单聊
+                std::string cmd = req_json.value("cmd", "");
+                if (cmd == "chat") {
+                    std::string target_user = req_json.value("to", "");
+                    std::string content = req_json.value("msg", "");
+                    spdlog::info("Route msg from '{}' to '{}'", current_user_,
+                                 target_user);
+                    Connection *target_conn =
+                        UserManager::GetInstance().GetConnection(target_user);
+                    if (target_conn != nullptr) {  // 目标在线
+                        json push_json;
+                        push_json["cmd"] = "push_chat";
+                        push_json["from"] = this->current_user_;
+                        push_json["msg"] = content;
+                        std::string push_packet =
+                            Codec::PackMessage(2, push_json.dump());
+                        // 跨对象调用
+                        target_conn->Send(push_packet);
+                        resp_json["code"] = 200;
+                        resp_json["msg"] = "Message forwarded successfully.";
+                    } else {
+                        // 目标不在线
+                        resp_json["code"] = 404;
+                        resp_json["msg"] = "User is offline.";
+                    }
+                }
+                // 给发送者回执包
+                std::string response_packet =
+                    Codec::PackMessage(msg_type, resp_json.dump());
+                Send(response_packet);
+            }
+        } catch (json::parse_error &e) {
+            spdlog::error("JSON parsing error on fd {}:{}", fd_, e.what());
         }
     }
 }
 
-void Connection::Send(const std::string& msg) {
+void Connection::Send(const std::string &msg) {
     // 简化板，先用write，一次发不完，应该存入write_buffer_
     write(fd_, msg.c_str(), msg.length());
 }
