@@ -7,6 +7,7 @@
 
 #include "network/Buffer.h"
 #include "network/EventLoop.h"
+#include "network/ThreadPool.h"
 class Connection {
 public:
     using CloseCallback = std::function<void(int)>;
