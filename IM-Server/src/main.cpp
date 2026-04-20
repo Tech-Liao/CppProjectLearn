@@ -9,6 +9,7 @@
 #include "common/Config.h"
 #include "network/TcpServer.h"
 #include "storage/MySQLManager.h"  // 引入数据库管理器
+#include "storage/RedisManager.h"
 int main() {
     // 1. 初始化日志
     spdlog::set_level(spdlog::level::debug);
@@ -45,6 +46,11 @@ int main() {
         spdlog::critical(
             "Failed to connect to MySQL. Server will start without DB "
             "support.");
+    }
+    // 【新增】：初始化 Redis
+    if (!RedisManager::GetInstance().Init("127.0.0.1", 6379)) {
+        spdlog::critical("Failed to connect to Redis. Exiting...");
+        return -1;
     }
     // 4. 启动网络引擎
     std::string ip = Config::GetInstance().GetServerIp();

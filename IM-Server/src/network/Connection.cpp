@@ -12,6 +12,7 @@
 #include "network/Codec.h"
 #include "storage/MySQLManager.h"
 #include "business/GroupManager.h"
+#include "storage/RedisManager.h"
 using json = nlohmann::json;
 static void SetNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -55,6 +56,10 @@ void Connection::Read() {
                 // 在线用户本删除
                 UserManager::GetInstance().RemoveUser(current_user_);
                 spdlog::info("User '{}' removed from UserManager.",
+                             current_user_);
+                // 从redis 删除状态
+                RedisManager::GetInstance().SetUserOffline(current_user_);
+                spdlog::info("User '{}' status synced to Redis (offline).",
                              current_user_);
             }
             if (close_callback_) {
@@ -112,6 +117,11 @@ void Connection::Read() {
                             spdlog::info(
                                 "User '{}' login and registered in "
                                 "UserManager.",
+                                username);
+                            // 将状态写入redis
+                            RedisManager::GetInstance().SetUserOnline(username);
+                            spdlog::info(
+                                "User '{}' status synced to Redis (Online).",
                                 username);
                             std::string response_packet =
                                 Codec::PackMessage(msg_type, resp_json.dump());
