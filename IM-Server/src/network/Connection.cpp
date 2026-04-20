@@ -93,7 +93,8 @@ void Connection::Read() {
             Send(pong_packet);
             continue;
         }
-        ThreadPool::GetInstance().Enqueue([this, msg_type, msg_body] {
+        ThreadPool::GetInstance().Enqueue([self = shared_from_this(), msg_type,
+                                           msg_body] {
             try {
                 // json 反序列化
                 json req_json = json::parse(msg_body);
@@ -112,8 +113,8 @@ void Connection::Read() {
                         if (is_valid) {
                             resp_json["code"] = 200;
                             resp_json["msg"] = "Login Success!";
-                            this->current_user_ = username;
-                            UserManager::GetInstance().AddUser(username, this);
+                            self->current_user_ = username;
+                            UserManager::GetInstance().AddUser(username, self);
                             spdlog::info(
                                 "User '{}' login and registered in "
                                 "UserManager.",
@@ -125,7 +126,7 @@ void Connection::Read() {
                                 username);
                             std::string response_packet =
                                 Codec::PackMessage(msg_type, resp_json.dump());
-                            Send(response_packet);
+                            self->Send(response_packet);
                             // 获取离线消息
                             auto offline_msgs =
                                 MySQLManager::GetInstance()
@@ -137,7 +138,7 @@ void Connection::Read() {
                                 for (const auto &msg_str : offline_msgs) {
                                     std::string push_packet =
                                         Codec::PackMessage(2, msg_str);
-                                    Send(push_packet);
+                                    self->Send(push_packet);
                                 }
                             }
                             return;
@@ -147,7 +148,7 @@ void Connection::Read() {
                         }
                         std::string response_packet =
                             Codec::PackMessage(msg_type, resp_json.dump());
-                        Send(response_packet);
+                        self->Send(response_packet);
                     }
                 } else if (msg_type == 2) {  // 单聊
                     std::string cmd = req_json.value("cmd", "");
@@ -155,19 +156,19 @@ void Connection::Read() {
                         std::string target_user = req_json.value("to", "");
                         std::string content = req_json.value("msg", "");
                         spdlog::info("Route msg from '{}' to '{}'",
-                                     current_user_, target_user);
-                        Connection *target_conn =
-                            UserManager::GetInstance().GetConnection(
-                                target_user);
-                        if (target_conn != nullptr) {  // 目标在线
+                                     self->current_user_, target_user);
+                        auto target_conn_ptr = UserManager::GetInstance()
+                                                   .GetConnection(target_user)
+                                                   .lock();  // 尝试获取
+                        if (target_conn_ptr != nullptr) {    // 目标在线
                             json push_json;
                             push_json["cmd"] = "push_chat";
-                            push_json["from"] = this->current_user_;
+                            push_json["from"] = self->current_user_;
                             push_json["msg"] = content;
                             std::string push_packet =
                                 Codec::PackMessage(2, push_json.dump());
                             // 跨对象调用
-                            target_conn->Send(push_packet);
+                            target_conn_ptr->Send(push_packet);
                             resp_json["code"] = 200;
                             resp_json["msg"] =
                                 "Message forwarded successfully.";
@@ -179,7 +180,7 @@ void Connection::Read() {
                                 target_user);
                             bool saved =
                                 MySQLManager::GetInstance()
-                                    .InsertOfflineMessage(this->current_user_,
+                                    .InsertOfflineMessage(self->current_user_,
                                                           target_user, content);
                             if (saved) {  // 用户离线，存放数据库
                                 resp_json["code"] = 200;
@@ -198,11 +199,11 @@ void Connection::Read() {
                         std::string content = req_json["msg"];
                         // 1、验证：发送者自己必须在群里
                         if (!GroupManager::GetInstance().IsUserInGroup(
-                                group_id, current_user_)) {
+                                group_id, self->current_user_)) {
                             resp_json["code"] = 403;
                             resp_json["msg"] =
                                 "Permission denied.You are not in the group";
-                            Send(
+                            self->Send(
                                 Codec::PackMessage(msg_type, resp_json.dump()));
                             return;
                         }
@@ -213,24 +214,28 @@ void Connection::Read() {
                         int online_count = 0;
                         int offline_count = 0;
                         for (const auto &member : members) {
-                            if (member == current_user_) continue;
+                            if (member == self->current_user_) continue;
                             json push_json;
                             push_json["cmd"] = "push_group_chat";
                             push_json["group_id"] = group_id;
-                            push_json["from"] = current_user_;
+                            push_json["from"] = self->current_user_;
                             push_json["msg"] = content;
                             std::string push_packet =
                                 Codec::PackMessage(2, push_json.dump());
                             // 3. 核心路由分支：去户口本查人
-                            Connection *target_conn =
+                            std::weak_ptr<Connection> target_conn =
                                 UserManager::GetInstance().GetConnection(
                                     member);
-                            if (target_conn != nullptr) {
-                                target_conn->Send(push_packet);
+                            if (auto target_conn_ptr =
+                                    UserManager::GetInstance()
+                                        .GetConnection(member)
+                                        .lock()) {
+                                target_conn_ptr->Send(push_packet);
                                 online_count++;
                             } else {
                                 MySQLManager::GetInstance()
-                                    .InsertOfflineMessage(current_user_, member,
+                                    .InsertOfflineMessage(self->current_user_,
+                                                          member,
                                                           "[群聊] " + content);
                                 offline_count++;
                             }
@@ -241,16 +246,18 @@ void Connection::Read() {
                             "Group message sent! Online: " +
                             std::to_string(online_count) +
                             ", Offline saved: " + std::to_string(offline_count);
-                        Send(Codec::PackMessage(msg_type, resp_json.dump()));
+                        self->Send(
+                            Codec::PackMessage(msg_type, resp_json.dump()));
                         return;
                     }
                     // 给发送者回执包
                     std::string response_packet =
                         Codec::PackMessage(msg_type, resp_json.dump());
-                    Send(response_packet);
+                    self->Send(response_packet);
                 }
             } catch (json::parse_error &e) {
-                spdlog::error("JSON parsing error on fd {}:{}", fd_, e.what());
+                spdlog::error("JSON parsing error on fd {}:{}", self->fd_,
+                              e.what());
             }
         });
     }

@@ -8,7 +8,7 @@
 #include "network/Buffer.h"
 #include "network/EventLoop.h"
 #include "network/ThreadPool.h"
-class Connection {
+class Connection : public std::enable_shared_from_this<Connection> {
 public:
     using CloseCallback = std::function<void(int)>;
     Connection(EventLoop *loop, int fd);

@@ -16,7 +16,7 @@ EventLoop::~EventLoop() {
 }
 
 void EventLoop::AddEvent(int fd, uint32_t events, EventCallback cb) {
-    struct epoll_event ev;
+    struct epoll_event ev{0};
     ev.data.fd = fd;
     ev.events = events;
     // 简化处理，一般需要进行判断
