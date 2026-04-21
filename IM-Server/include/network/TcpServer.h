@@ -25,6 +25,6 @@ private:
     uint16_t port_;
     int listen_fd_;  // 监听socket文件描述符
     std::unique_ptr<EventLoop> loop_;
-    std::map<int, std::unique_ptr<Connection>> connections_;
+    std::map<int, std::shared_ptr<Connection>> connections_;
 };
 #endif

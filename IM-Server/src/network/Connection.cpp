@@ -27,7 +27,8 @@ static void SetNonBlocking(int fd) {
 
 Connection::Connection(EventLoop *loop, int fd) : loop_(loop), fd_(fd) {
     SetNonBlocking(fd_);
-    loop_->AddEvent(fd_, EPOLLIN, [this]() { this->Read(); });
+    loop_->AddEvent(fd_, EPOLLIN,
+                    [this](uint32_t revents) { this->HandleEvent(revents); });
 }
 
 Connection::~Connection() {
@@ -264,6 +265,46 @@ void Connection::Read() {
 }
 
 void Connection::Send(const std::string &msg) {
+    std::lock_guard<std::mutex> lock(send_mutex_);
+    bool was_empty = write_buffer_.empty();
+    write_buffer_.append(msg);
+    if (was_empty) {
+        loop_->AddEvent(fd_, EPOLLIN | EPOLLOUT, [this](uint32_t revents) {
+            this->HandleEvent(revents);
+        });
+    }
     // 简化板，先用write，一次发不完，应该存入write_buffer_
     write(fd_, msg.c_str(), msg.length());
+}
+
+void Connection::HandleEvent(uint32_t revents) {
+    auto guard = shared_from_this();
+    if (revents & EPOLLIN) {
+        Read();
+    }
+    if (revents & EPOLLOUT) {
+        Write();
+    }
+}
+
+void Connection::Write() {
+    std::lock_guard<std::mutex> lock(send_mutex_);
+    if (write_buffer_.empty()) return;
+    int bytes_wrote = write(fd_, write_buffer_.data(), write_buffer_.length());
+    if (bytes_wrote > 0) {  // 剔除已经成功发出的数据
+        write_buffer_.erase(0, bytes_wrote);
+    } else if (bytes_wrote == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        // 内核缓冲区满了，写不进去了，需要下次EPOLLOUT唤醒
+        return;
+    } else {
+        spdlog::error("Write error on fd:{}", fd_);
+        if (close_callback_) close_callback_(fd_);
+        return;
+    }
+    // 数据发送完了，需要取消EPOLLOUT监听，仅保留EPOLLIN
+    if (write_buffer_.empty()) {
+        loop_->AddEvent(fd_, EPOLLIN, [this](uint32_t revents) {
+            this->HandleEvent(revents);
+        });
+    }
 }

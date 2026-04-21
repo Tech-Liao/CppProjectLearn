@@ -51,7 +51,7 @@ TcpServer::~TcpServer() {
     }
 }
 void TcpServer::start() {
-    loop_->AddEvent(listen_fd_, EPOLLIN, [this]() {
+    loop_->AddEvent(listen_fd_, EPOLLIN, [this](uint32_t revents) {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(this->listen_fd_,

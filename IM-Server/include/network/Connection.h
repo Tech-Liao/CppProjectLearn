@@ -10,7 +10,7 @@
 #include "network/ThreadPool.h"
 class Connection : public std::enable_shared_from_this<Connection> {
 public:
-    using CloseCallback = std::function<void(int)>;
+    using CloseCallback = std::function<void(uint32_t)>;
     Connection(EventLoop *loop, int fd);
     ~Connection();
 
@@ -24,6 +24,10 @@ public:
     time_t GetLastActiveTime() const { return last_active_time_; }
     // 更新活跃时间（只要收到任何数据就调用)
     void UpdateActiveTime() { last_active_time_ = time(NULL); }
+    // 统一事件分发器
+    void HandleEvent(uint32_t revents);
+    // 异步写函数
+    void Write();
 
 private:
     EventLoop *loop_;
@@ -36,5 +40,9 @@ private:
     std::string current_user_;
     // 记录最后一次收到包的时间
     time_t last_active_time_;
+
+    // 写缓冲的锁与写缓冲
+    std::mutex send_mutex_;
+    std::string write_buffer_;
 };
 #endif

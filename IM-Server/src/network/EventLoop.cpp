@@ -46,7 +46,7 @@ void EventLoop::Loop() {
             // 这是处理逻辑的分发点
             std::cout << "Event triggered on fd: " << fd << std::endl;
             if (callbacks_.count(fd)) {
-                callbacks_[fd]();
+                callbacks_[fd](revents);
             }
         }
     }
